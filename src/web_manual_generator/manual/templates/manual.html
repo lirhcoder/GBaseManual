@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="{{ lang }}">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }}</title>
+    <style>
+        :root {
+            --primary-color: #2563eb;
+            --secondary-color: #64748b;
+            --success-color: #22c55e;
+            --warning-color: #f59e0b;
+            --danger-color: #ef4444;
+            --bg-color: #ffffff;
+            --text-color: #1e293b;
+            --border-color: #e2e8f0;
+            --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            line-height: 1.6;
+            color: var(--text-color);
+            background-color: #f8fafc;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background-color: var(--bg-color);
+            border-radius: 8px;
+            box-shadow: var(--card-shadow);
+            padding: 40px;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 40px;
+            padding-bottom: 20px;
+            border-bottom: 2px solid var(--border-color);
+        }
+
+        h1 {
+            font-size: 2em;
+            color: var(--primary-color);
+            margin-bottom: 10px;
+        }
+
+        .meta {
+            color: var(--secondary-color);
+            font-size: 0.9em;
+        }
+
+        .toc {
+            background-color: #f1f5f9;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 30px;
+        }
+
+        .toc h2 {
+            font-size: 1.2em;
+            margin-bottom: 15px;
+            color: var(--text-color);
+        }
+
+        .toc ul {
+            list-style: none;
+        }
+
+        .toc li {
+            margin: 8px 0;
+        }
+
+        .toc a {
+            color: var(--primary-color);
+            text-decoration: none;
+        }
+
+        .toc a:hover {
+            text-decoration: underline;
+        }
+
+        .prerequisites {
+            background-color: #fef3c7;
+            border-left: 4px solid var(--warning-color);
+            padding: 15px 20px;
+            margin-bottom: 30px;
+            border-radius: 0 8px 8px 0;
+        }
+
+        .prerequisites h2 {
+            font-size: 1.1em;
+            color: #92400e;
+            margin-bottom: 10px;
+        }
+
+        .prerequisites ul {
+            margin-left: 20px;
+            color: #78350f;
+        }
+
+        .video-section {
+            background-color: #eff6ff;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 30px;
+            text-align: center;
+        }
+
+        .video-section h2 {
+            font-size: 1.1em;
+            color: var(--primary-color);
+            margin-bottom: 10px;
+        }
+
+        .video-link {
+            display: inline-block;
+            background-color: var(--primary-color);
+            color: white;
+            padding: 10px 20px;
+            border-radius: 6px;
+            text-decoration: none;
+        }
+
+        .video-link:hover {
+            background-color: #1d4ed8;
+        }
+
+        .steps {
+            margin-top: 30px;
+        }
+
+        .steps h2 {
+            font-size: 1.4em;
+            margin-bottom: 20px;
+            color: var(--text-color);
+        }
+
+        .step {
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            margin-bottom: 20px;
+            overflow: hidden;
+        }
+
+        .step-header {
+            display: flex;
+            align-items: center;
+            background-color: #f8fafc;
+            padding: 15px 20px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .step-number {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 32px;
+            height: 32px;
+            background-color: var(--primary-color);
+            color: white;
+            border-radius: 50%;
+            font-weight: bold;
+            margin-right: 15px;
+            flex-shrink: 0;
+        }
+
+        .step-title {
+            flex-grow: 1;
+        }
+
+        .step-title h3 {
+            font-size: 1.1em;
+            margin-bottom: 2px;
+        }
+
+        .step-action {
+            display: inline-block;
+            background-color: #e0f2fe;
+            color: #0369a1;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 0.8em;
+        }
+
+        .step-content {
+            padding: 20px;
+        }
+
+        .step-description {
+            margin-bottom: 15px;
+        }
+
+        .step-screenshot {
+            margin-top: 15px;
+        }
+
+        .step-screenshot img {
+            max-width: 100%;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            box-shadow: var(--card-shadow);
+        }
+
+        .step-notes {
+            margin-top: 15px;
+            padding: 10px 15px;
+            background-color: #f0fdf4;
+            border-left: 3px solid var(--success-color);
+            border-radius: 0 6px 6px 0;
+            font-size: 0.9em;
+            color: #166534;
+        }
+
+        .step-notes::before {
+            content: "{{ notes_label }}: ";
+            font-weight: bold;
+        }
+
+        footer {
+            margin-top: 40px;
+            padding-top: 20px;
+            border-top: 1px solid var(--border-color);
+            text-align: center;
+            color: var(--secondary-color);
+            font-size: 0.9em;
+        }
+
+        @media print {
+            body {
+                background-color: white;
+                padding: 0;
+            }
+
+            .container {
+                box-shadow: none;
+                padding: 20px;
+            }
+
+            .step {
+                page-break-inside: avoid;
+            }
+
+            .step-screenshot img {
+                max-height: 300px;
+                object-fit: contain;
+            }
+        }
+
+        @media (max-width: 600px) {
+            .container {
+                padding: 20px;
+            }
+
+            .step-header {
+                flex-wrap: wrap;
+            }
+
+            .step-number {
+                margin-bottom: 10px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>{{ title }}</h1>
+            {% if description %}
+            <p class="description">{{ description }}</p>
+            {% endif %}
+            <p class="meta">{{ generated_label }}: {{ generated_at }}</p>
+        </header>
+
+        {% if toc_items %}
+        <nav class="toc">
+            <h2>{{ toc_label }}</h2>
+            <ul>
+                {% for item in toc_items %}
+                <li><a href="#step-{{ item.id }}">{{ step_label }} {{ item.id }}: {{ item.title }}</a></li>
+                {% endfor %}
+            </ul>
+        </nav>
+        {% endif %}
+
+        {% if prerequisites %}
+        <section class="prerequisites">
+            <h2>{{ prerequisites_label }}</h2>
+            <ul>
+                {% for prereq in prerequisites %}
+                <li>{{ prereq }}</li>
+                {% endfor %}
+            </ul>
+        </section>
+        {% endif %}
+
+        {% if video_file %}
+        <section class="video-section">
+            <h2>{{ video_label }}</h2>
+            <a href="{{ video_file }}" class="video-link">{{ watch_video_label }}</a>
+        </section>
+        {% endif %}
+
+        <section class="steps">
+            <h2>{{ steps_label }}</h2>
+            {% for step in steps %}
+            <article class="step" id="step-{{ step.id }}">
+                <div class="step-header">
+                    <span class="step-number">{{ step.id }}</span>
+                    <div class="step-title">
+                        <h3>{{ step.description }}</h3>
+                        <span class="step-action">{{ step.action_name }}</span>
+                    </div>
+                </div>
+                <div class="step-content">
+                    {% if step.details %}
+                    <div class="step-description">
+                        {{ step.details }}
+                    </div>
+                    {% endif %}
+
+                    {% if step.screenshot %}
+                    <div class="step-screenshot">
+                        <img src="{{ step.screenshot }}" alt="{{ step_label }} {{ step.id }} {{ screenshot_label }}">
+                    </div>
+                    {% endif %}
+
+                    {% if step.notes %}
+                    <div class="step-notes">{{ step.notes }}</div>
+                    {% endif %}
+                </div>
+            </article>
+            {% endfor %}
+        </section>
+
+        <footer>
+            <p>{{ footer_text }}</p>
+        </footer>
+    </div>
+</body>
+</html>
