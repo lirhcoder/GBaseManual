@@ -9,10 +9,11 @@ import {
   useMessage, useDialog
 } from 'naive-ui'
 import { VueDraggable } from 'vue-draggable-plus'
-import { recordingsApi, manualApi, type Step } from '@/api/client'
+import { recordingsApi, manualApi, videoApi, type Step, type VideoInfo } from '@/api/client'
 import ImageEditor from '@/components/editor/ImageEditor.vue'
 import AddStepModal, { type NewStepData } from '@/components/editor/AddStepModal.vue'
 import BatchOperations from '@/components/editor/BatchOperations.vue'
+import VideoPlayer from '@/components/editor/VideoPlayer.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -49,6 +50,10 @@ const editingScreenshotUrl = ref('')
 const showAddStepModal = ref(false)
 const addStepAfter = ref<number | null>(null)
 const addingStep = ref(false)
+
+// Video player
+const showVideoPlayer = ref(false)
+const videoInfo = ref<VideoInfo | null>(null)
 
 // API Key settings
 const showSettingsModal = ref(false)
@@ -450,9 +455,37 @@ function handleKeydown(e: KeyboardEvent) {
   }
 }
 
+// Video functions
+async function loadVideoInfo() {
+  try {
+    const { data } = await videoApi.getInfo(projectSlug.value, recordingName.value)
+    videoInfo.value = data
+  } catch (err) {
+    console.error('Failed to load video info:', err)
+  }
+}
+
+function toggleVideoPlayer() {
+  showVideoPlayer.value = !showVideoPlayer.value
+}
+
+async function handleFrameCaptured(stepId: number | null) {
+  // Close video player after successful capture
+  showVideoPlayer.value = false
+
+  // Reload recording to get updated screenshots
+  await loadRecording()
+  if (stepId !== null) {
+    // Select the step that was updated
+    selectedStepId.value = stepId
+  }
+  // Note: VideoPlayer already shows success message, no need to duplicate
+}
+
 onMounted(() => {
   loadApiKeys()
   loadRecording()
+  loadVideoInfo()
   window.addEventListener('keydown', handleKeydown)
 })
 
@@ -567,6 +600,13 @@ onUnmounted(() => {
           </NTooltip>
         </NSpace>
         <NSpace>
+          <NButton
+            v-if="videoInfo?.has_video"
+            :type="showVideoPlayer ? 'primary' : 'default'"
+            @click="toggleVideoPlayer"
+          >
+            {{ showVideoPlayer ? '隐藏视频' : '视频截图' }}
+          </NButton>
           <NButton @click="openPreview">预览手册</NButton>
           <NButton type="primary" @click="generateManual('html')">导出 HTML</NButton>
           <NButton @click="generateManual('pdf')">导出 PDF</NButton>
@@ -575,6 +615,16 @@ onUnmounted(() => {
       </NLayoutHeader>
 
       <NLayoutContent class="editor-content">
+        <!-- Video Player -->
+        <VideoPlayer
+          v-if="showVideoPlayer"
+          :project-slug="projectSlug"
+          :recording-name="recordingName"
+          :selected-step-id="selectedStepId"
+          @close="showVideoPlayer = false"
+          @frame-captured="handleFrameCaptured"
+        />
+
         <NEmpty v-if="!selectedStep" description="选择一个步骤开始编辑" />
 
         <template v-else>
@@ -917,14 +967,7 @@ onUnmounted(() => {
   background: white;
 }
 
-kbd {
-  background: #f0f0f0;
-  border: 1px solid #ccc;
-  border-radius: 3px;
-  padding: 2px 6px;
-  font-family: monospace;
-  font-size: 12px;
-}
+/* kbd styles need to be global for tooltips */
 
 .editor-content {
   padding: 24px;
@@ -1004,5 +1047,19 @@ code.meta-value {
 .settings-hint {
   font-size: 12px;
   color: #18a058;
+}
+</style>
+
+<style>
+/* Global styles for elements rendered outside scoped context (e.g., tooltips) */
+kbd {
+  background: #333;
+  color: #fff;
+  border: 1px solid #555;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-family: monospace;
+  font-size: 12px;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.2);
 }
 </style>

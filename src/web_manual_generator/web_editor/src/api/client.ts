@@ -203,3 +203,47 @@ export const manualApi = {
   downloadUrl: (projectSlug: string, recordingName: string, format: string) =>
     `/api/v1/manual/download/${projectSlug}/${recordingName}/${format}`,
 }
+
+
+// ==================== Video API ====================
+
+export interface VideoInfo {
+  has_video: boolean
+  filename?: string
+  size?: number
+  chapters?: Array<{
+    time: number
+    time_formatted: string
+    title: string
+    title_zh: string
+    title_ja: string
+    title_en: string
+  }>
+}
+
+export const videoApi = {
+  getVideoUrl: (projectSlug: string, recordingName: string) =>
+    `/api/v1/recordings/${projectSlug}/${recordingName}/video`,
+
+  getInfo: (projectSlug: string, recordingName: string) =>
+    api.get<VideoInfo>(`/recordings/${projectSlug}/${recordingName}/video/info`),
+
+  captureFrame: (projectSlug: string, recordingName: string, imageBlob: Blob, stepId?: number) => {
+    const formData = new FormData()
+    formData.append('file', imageBlob, 'capture.png')
+    const url = stepId
+      ? `/recordings/${projectSlug}/${recordingName}/video/capture?step_id=${stepId}`
+      : `/recordings/${projectSlug}/${recordingName}/video/capture`
+    return api.post(url, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+  },
+
+  setStepScreenshot: (projectSlug: string, recordingName: string, stepId: number, imageBlob: Blob) => {
+    const formData = new FormData()
+    formData.append('file', imageBlob, 'screenshot.png')
+    return api.post(`/recordings/${projectSlug}/${recordingName}/steps/${stepId}/screenshot`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+  },
+}

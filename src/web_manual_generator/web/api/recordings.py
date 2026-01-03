@@ -577,6 +577,165 @@ async def ai_regenerate_descriptions(
         )
 
 
+# ==================== Video API ====================
+
+@router.get("/{project_slug}/{recording_name}/video")
+async def get_video(project_slug: str, recording_name: str):
+    """
+    Get video file for streaming.
+
+    Returns the recorded video for playback.
+    """
+    manager = get_manager()
+    recording_dir = manager.get_recording_dir(project_slug, recording_name)
+    videos_dir = recording_dir / "videos"
+
+    if not videos_dir.exists():
+        raise HTTPException(status_code=404, detail="No video directory found")
+
+    # Find video file (webm format)
+    video_files = list(videos_dir.glob("*.webm"))
+    if not video_files:
+        raise HTTPException(status_code=404, detail="No video file found")
+
+    video_path = video_files[0]
+    return FileResponse(
+        video_path,
+        media_type="video/webm",
+        headers={"Accept-Ranges": "bytes"}
+    )
+
+
+@router.get("/{project_slug}/{recording_name}/video/info")
+async def get_video_info(project_slug: str, recording_name: str):
+    """
+    Get video information.
+
+    Returns video file details and chapter markers if available.
+    """
+    manager = get_manager()
+    recording_dir = manager.get_recording_dir(project_slug, recording_name)
+    videos_dir = recording_dir / "videos"
+
+    if not videos_dir.exists():
+        return {"has_video": False}
+
+    video_files = list(videos_dir.glob("*.webm"))
+    if not video_files:
+        return {"has_video": False}
+
+    video_path = video_files[0]
+
+    # Check for chapters file
+    chapters = []
+    chapters_file = recording_dir / "chapters.json"
+    if chapters_file.exists():
+        import json
+        with open(chapters_file, "r", encoding="utf-8") as f:
+            chapters = json.load(f)
+
+    return {
+        "has_video": True,
+        "filename": video_path.name,
+        "size": video_path.stat().st_size,
+        "chapters": chapters,
+    }
+
+
+@router.post("/{project_slug}/{recording_name}/video/capture", response_model=SuccessResponse)
+async def capture_video_frame(
+    project_slug: str,
+    recording_name: str,
+    file: UploadFile = File(...),
+    step_id: Optional[int] = None,
+):
+    """
+    Capture a frame from video and save as screenshot.
+
+    The frame image is uploaded from the frontend (captured via canvas).
+    If step_id is provided, the screenshot will be associated with that step.
+    """
+    manager = get_manager()
+    screenshots_dir = manager.get_screenshots_dir(project_slug, recording_name)
+    screenshots_dir.mkdir(parents=True, exist_ok=True)
+
+    # Generate filename
+    import time
+    timestamp = int(time.time() * 1000)
+    filename = f"video_capture_{timestamp}.png"
+    screenshot_path = screenshots_dir / filename
+
+    # Save uploaded frame
+    content = await file.read()
+    screenshot_path.write_bytes(content)
+
+    # If step_id provided, update the step's screenshot
+    if step_id is not None:
+        action_log = manager.load_recording(project_slug, recording_name)
+        if action_log:
+            for step in action_log.steps:
+                if step.id == step_id:
+                    step.screenshot = filename
+                    break
+            manager.save_recording(project_slug, recording_name, action_log)
+
+    return SuccessResponse(
+        success=True,
+        message=f"Frame captured as {filename}"
+    )
+
+
+@router.post("/{project_slug}/{recording_name}/steps/{step_id}/screenshot", response_model=SuccessResponse)
+async def set_step_screenshot(
+    project_slug: str,
+    recording_name: str,
+    step_id: int,
+    file: UploadFile = File(...)
+):
+    """
+    Set or replace a step's screenshot.
+
+    Uploads an image and sets it as the screenshot for the specified step.
+    """
+    manager = get_manager()
+    action_log = manager.load_recording(project_slug, recording_name)
+
+    if not action_log:
+        raise HTTPException(status_code=404, detail="Recording not found")
+
+    # Find step
+    step = None
+    for s in action_log.steps:
+        if s.id == step_id:
+            step = s
+            break
+
+    if not step:
+        raise HTTPException(status_code=404, detail=f"Step {step_id} not found")
+
+    # Save screenshot
+    screenshots_dir = manager.get_screenshots_dir(project_slug, recording_name)
+    screenshots_dir.mkdir(parents=True, exist_ok=True)
+
+    # Generate unique filename with timestamp to avoid browser caching
+    import time
+    timestamp = int(time.time() * 1000)
+    filename = f"step_{step_id:03d}_{timestamp}.png"
+    screenshot_path = screenshots_dir / filename
+
+    content = await file.read()
+    screenshot_path.write_bytes(content)
+
+    # Update step with new filename
+    step.screenshot = filename
+    manager.save_recording(project_slug, recording_name, action_log)
+
+    return SuccessResponse(
+        success=True,
+        message=f"Screenshot set for step {step_id}"
+    )
+
+
 # ==================== Recording API ====================
 
 from ..schemas import StartRecordingRequest, StartRecordingResponse
