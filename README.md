@@ -149,6 +149,29 @@ asyncio.run(main())
 - Rich (for CLI output)
 - Pydantic
 
+## Web Editor Development
+
+To start the Web Editor (Frontend + Backend), simply run the provided batch script:
+
+```bat
+start_app.bat
+```
+
+Or run them manually:
+
+1. **Start Backend Server:**
+   ```bash
+   web-manual serve
+   # Server runs at http://127.0.0.1:8080
+   ```
+
+2. **Start Frontend (in a new terminal):**
+   ```bash
+   cd src/web_manual_generator/web_editor
+   npm run dev
+   # UI available at http://localhost:5173
+   ```
+
 ## License
 
 MIT
