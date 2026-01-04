@@ -39,6 +39,38 @@ def get_manager() -> ProjectManager:
     return ProjectManager()
 
 
+# ==================== Recording API ====================
+
+@router.delete("/{project_slug}/{recording_name}", response_model=SuccessResponse)
+async def delete_recording(project_slug: str, recording_name: str):
+    """
+    Delete a recording.
+
+    Deletes a recording and all its associated files (screenshots, videos, etc.).
+    """
+    manager = get_manager()
+
+    # Check if recording exists
+    recording = manager.get_recording(project_slug, recording_name)
+    if not recording:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Recording '{recording_name}' not found in project '{project_slug}'"
+        )
+
+    # Delete recording
+    if manager.delete_recording(project_slug, recording_name):
+        return SuccessResponse(
+            success=True,
+            message=f"Recording '{recording_name}' deleted successfully"
+        )
+
+    raise HTTPException(
+        status_code=500,
+        detail="Failed to delete recording"
+    )
+
+
 # ==================== Steps API ====================
 
 @router.get("/{project_slug}/{recording_name}/steps", response_model=StepsResponse)

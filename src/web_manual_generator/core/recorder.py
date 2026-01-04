@@ -55,10 +55,20 @@ class ActionRecorder:
         self.chapter_marker = VideoChapterMarker()
 
         self._page: Optional[Page] = None
+        self._context: Optional[BrowserContext] = None
         self._is_recording = False
         self._action_handlers: list[Callable[[ActionStep], Awaitable[None]]] = []
         self._stop_event: Optional[asyncio.Event] = None
         self._last_mouse_position: tuple[int, int] = (0, 0)
+        self._last_click_info: Optional[dict] = None  # Store last click for navigation detection
+        self._last_click_recorded = True  # Track if last click was recorded
+        self._exposed_functions = False  # Track if functions are exposed
+
+        # Server-side deduplication tracking
+        self._last_recorded_click: Optional[dict] = None
+        self._last_recorded_input: Optional[dict] = None
+        self._last_recorded_navigate: Optional[dict] = None
+        self._debounce_ms = 300  # Match client-side debounce
 
     async def start_recording(
         self,
@@ -75,6 +85,7 @@ class ActionRecorder:
             start_url: Initial URL to navigate to
         """
         self._page = page
+        self._context = page.context
         self._is_recording = True
         self._stop_event = asyncio.Event()
         self.chapter_marker.start()
@@ -94,8 +105,14 @@ class ActionRecorder:
                 description=get_text("navigate_to", self.language).format(url=start_url),
             )
 
-        # Set up event listeners
+        # Set up event listeners using context-level exposure (survives cross-origin navigation)
         await self._setup_listeners(page)
+
+        # Track navigation events to catch clicks that trigger navigation
+        page.on("framenavigated", lambda frame: asyncio.create_task(self._on_navigation(frame)))
+
+        # Re-inject scripts after cross-origin navigation
+        page.on("load", lambda: asyncio.create_task(self._on_page_load()))
 
         console.print(Panel(
             get_text("recording_started", self.language) + "\n\n" +
@@ -163,17 +180,37 @@ class ActionRecorder:
     async def _setup_listeners(self, page: "Page") -> None:
         """Set up event listeners on the page."""
 
-        # Expose functions to the page for recording actions
-        await page.expose_function("__wmg_record_click", self._on_click)
-        await page.expose_function("__wmg_record_input", self._on_input)
-        await page.expose_function("__wmg_record_mouse", self._on_mouse_move)
-        await page.expose_function("__wmg_stop_recording", self._on_stop_request)
+        # Expose functions at context level - survives cross-origin navigation
+        context = page.context
+        if not self._exposed_functions:
+            try:
+                await context.expose_function("__wmg_record_click", self._on_click)
+                await context.expose_function("__wmg_record_input", self._on_input)
+                await context.expose_function("__wmg_record_mouse", self._on_mouse_move)
+                await context.expose_function("__wmg_stop_recording", self._on_stop_request)
+                self._exposed_functions = True
+            except Exception as e:
+                # Functions might already be exposed
+                console.print(f"[dim]Note: {e}[/dim]")
 
-        # Inject recording script with control panel
-        await page.add_init_script("""
+        # Inject recording script with control panel at context level
+        # This ensures the script runs on every page, including after cross-origin navigation
+        await context.add_init_script("""
             (() => {
+                // Skip if already injected (prevents duplicate event listeners)
+                if (window.__wmg_injected) return;
+                window.__wmg_injected = true;
+
                 let lastMouseX = 0;
                 let lastMouseY = 0;
+
+                // Debounce tracking to prevent duplicate events
+                let lastClickTime = 0;
+                let lastClickSelector = '';
+                let lastInputTime = 0;
+                let lastInputSelector = '';
+                let lastInputValue = '';
+                const DEBOUNCE_MS = 300;  // Ignore duplicate events within 300ms
 
                 // Track mouse position
                 document.addEventListener('mousemove', (e) => {
@@ -197,6 +234,14 @@ class ActionRecorder:
                     const text = target.innerText?.slice(0, 100) || '';
                     const tagName = target.tagName.toLowerCase();
 
+                    // Debounce: skip if same selector clicked within DEBOUNCE_MS
+                    const now = Date.now();
+                    if (selector === lastClickSelector && (now - lastClickTime) < DEBOUNCE_MS) {
+                        return;  // Skip duplicate click
+                    }
+                    lastClickTime = now;
+                    lastClickSelector = selector;
+
                     // Pass mouse position for cursor display
                     if (window.__wmg_record_click) {
                         window.__wmg_record_click(selector, text, tagName, lastMouseX, lastMouseY);
@@ -210,6 +255,15 @@ class ActionRecorder:
                         const selector = getSelector(target);
                         const value = target.value;
                         const inputType = target.type || 'text';
+
+                        // Debounce: skip if same selector+value within DEBOUNCE_MS
+                        const now = Date.now();
+                        if (selector === lastInputSelector && value === lastInputValue && (now - lastInputTime) < DEBOUNCE_MS) {
+                            return;  // Skip duplicate input
+                        }
+                        lastInputTime = now;
+                        lastInputSelector = selector;
+                        lastInputValue = value;
 
                         if (window.__wmg_record_input) {
                             window.__wmg_record_input(selector, value, inputType);
@@ -291,22 +345,90 @@ class ActionRecorder:
                     }
                 };
 
+                // Helper function to check if an ID is dynamic/unstable
+                function isDynamicId(id) {
+                    if (!id) return true;
+                    // Skip dynamic IDs from UI frameworks
+                    const dynamicPatterns = [
+                        /^mantine-/,      // Mantine UI
+                        /^radix-/,        // Radix UI
+                        /^react-/,        // React
+                        /^:r[0-9a-z]+:/,  // React 18+ useId
+                        /^headlessui-/,   // Headless UI
+                        /^mui-/,          // Material UI
+                        /^chakra-/,       // Chakra UI
+                        /^__wmg/,         // Our own internal IDs
+                        /^[0-9a-f]{8}-/,  // UUID-like IDs
+                        /^ember[0-9]+/,   // Ember
+                        /^_[0-9]+$/,      // Numeric underscore IDs
+                    ];
+                    return dynamicPatterns.some(p => p.test(id));
+                }
+
                 // Helper function to generate CSS selector
                 function getSelector(element) {
-                    if (element.id && !element.id.startsWith('__wmg')) {
+                    // 1. Try stable ID first
+                    if (element.id && !isDynamicId(element.id)) {
                         return '#' + element.id;
                     }
 
+                    // 2. Try data-testid (best practice for testing)
+                    if (element.dataset && element.dataset.testid) {
+                        return `[data-testid="${element.dataset.testid}"]`;
+                    }
+
+                    // 3. Try name attribute
                     if (element.name) {
                         return `[name="${element.name}"]`;
                     }
 
+                    // 4. Try aria-label for accessibility
+                    const ariaLabel = element.getAttribute('aria-label');
+                    if (ariaLabel && ariaLabel.length < 50) {
+                        return `[aria-label="${ariaLabel}"]`;
+                    }
+
+                    // 5. Check if element is inside a button or link (for nested elements like spans)
+                    const parentButton = element.closest('button, [role="button"]');
+                    const parentLink = element.closest('a, [role="link"]');
+                    const text = element.textContent?.trim();
+
+                    if (parentButton && text && text.length < 30 && !text.includes('\\n')) {
+                        return `button:has-text("${text}")`;
+                    }
+                    if (parentLink && text && text.length < 30 && !text.includes('\\n')) {
+                        return `a:has-text("${text}")`;
+                    }
+
+                    // 6. Try role + text for buttons/links (direct element)
+                    const role = element.getAttribute('role');
+                    if ((element.tagName === 'BUTTON' || role === 'button') && text && text.length < 30 && !text.includes('\\n')) {
+                        return `button:has-text("${text}")`;
+                    }
+                    if ((element.tagName === 'A' || role === 'link') && text && text.length < 30 && !text.includes('\\n')) {
+                        return `a:has-text("${text}")`;
+                    }
+
+                    // 7. For any element with short text, use text selector
+                    if (text && text.length > 0 && text.length < 30 && !text.includes('\\n')) {
+                        return `text="${text}"`;
+                    }
+
+                    // 8. Fallback to path-based selector
                     const path = [];
                     while (element && element.nodeType === Node.ELEMENT_NODE) {
                         let selector = element.tagName.toLowerCase();
 
                         if (element.className && typeof element.className === 'string') {
-                            const classes = element.className.trim().split(/\\s+/).filter(c => c && !c.startsWith('__wmg'));
+                            // Filter out dynamic classes
+                            const classes = element.className.trim().split(/\\s+/).filter(c => {
+                                if (!c || c.startsWith('__wmg')) return false;
+                                // Skip Mantine/framework dynamic classes
+                                if (/^m_[a-z0-9]+$/.test(c)) return false;  // Mantine
+                                if (/^css-[a-z0-9]+$/.test(c)) return false;  // Emotion
+                                if (/^sc-[a-z]+$/.test(c)) return false;  // Styled Components
+                                return true;
+                            });
                             if (classes.length > 0) {
                                 selector += '.' + classes.slice(0, 2).join('.');
                             }
@@ -331,6 +453,372 @@ class ActionRecorder:
             })();
         """)
 
+        # Also inject the script directly into the current page (since add_init_script only runs on future navigations)
+        await self._inject_recording_script(page)
+
+    async def _inject_recording_script(self, page: "Page") -> None:
+        """Inject the recording script directly into a page."""
+        try:
+            await page.evaluate("""
+                (() => {
+                    // Skip if already injected (prevents duplicate event listeners)
+                    if (window.__wmg_injected) return;
+                    window.__wmg_injected = true;
+
+                    let lastMouseX = 0;
+                    let lastMouseY = 0;
+
+                    // Debounce tracking to prevent duplicate events
+                    let lastClickTime = 0;
+                    let lastClickSelector = '';
+                    let lastInputTime = 0;
+                    let lastInputSelector = '';
+                    let lastInputValue = '';
+                    const DEBOUNCE_MS = 300;  // Ignore duplicate events within 300ms
+
+                    // Track mouse position
+                    document.addEventListener('mousemove', (e) => {
+                        lastMouseX = e.clientX;
+                        lastMouseY = e.clientY;
+                        if (window.__wmg_record_mouse) {
+                            window.__wmg_record_mouse(e.clientX, e.clientY);
+                        }
+                    }, true);
+
+                    // Track clicks - use mousedown to capture BEFORE click happens
+                    document.addEventListener('mousedown', async (e) => {
+                        if (e.target.closest && e.target.closest('#__wmg_control_panel')) {
+                            return;
+                        }
+
+                        const target = e.target;
+                        const selector = getSelector(target);
+                        const text = target.innerText?.slice(0, 100) || '';
+                        const tagName = target.tagName.toLowerCase();
+
+                        // Debounce: skip if same selector clicked within DEBOUNCE_MS
+                        const now = Date.now();
+                        if (selector === lastClickSelector && (now - lastClickTime) < DEBOUNCE_MS) {
+                            return;  // Skip duplicate click
+                        }
+                        lastClickTime = now;
+                        lastClickSelector = selector;
+
+                        if (window.__wmg_record_click) {
+                            window.__wmg_record_click(selector, text, tagName, lastMouseX, lastMouseY);
+                        }
+                    }, true);
+
+                    // Track input changes
+                    document.addEventListener('change', async (e) => {
+                        const target = e.target;
+                        if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT') {
+                            const selector = getSelector(target);
+                            const value = target.value;
+                            const inputType = target.type || 'text';
+
+                            // Debounce: skip if same selector+value within DEBOUNCE_MS
+                            const now = Date.now();
+                            if (selector === lastInputSelector && value === lastInputValue && (now - lastInputTime) < DEBOUNCE_MS) {
+                                return;  // Skip duplicate input
+                            }
+                            lastInputTime = now;
+                            lastInputSelector = selector;
+                            lastInputValue = value;
+
+                            if (window.__wmg_record_input) {
+                                window.__wmg_record_input(selector, value, inputType);
+                            }
+                        }
+                    }, true);
+
+                    // F2 key to stop recording
+                    document.addEventListener('keydown', (e) => {
+                        if (e.key === 'F2') {
+                            e.preventDefault();
+                            if (window.__wmg_stop_recording) {
+                                window.__wmg_stop_recording();
+                            }
+                        }
+                    }, true);
+
+                    // Create control panel if not exists
+                    if (!document.getElementById('__wmg_control_panel')) {
+                        const panel = document.createElement('div');
+                        panel.id = '__wmg_control_panel';
+                        panel.innerHTML = `
+                            <style>
+                                #__wmg_control_panel {
+                                    position: fixed;
+                                    top: 10px;
+                                    right: 10px;
+                                    z-index: 999999;
+                                    background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+                                    padding: 8px 16px;
+                                    border-radius: 20px;
+                                    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+                                    cursor: pointer;
+                                    display: flex;
+                                    align-items: center;
+                                    gap: 8px;
+                                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+                                    transition: transform 0.2s, box-shadow 0.2s;
+                                }
+                                #__wmg_control_panel:hover {
+                                    transform: scale(1.05);
+                                    box-shadow: 0 6px 16px rgba(0,0,0,0.4);
+                                }
+                                #__wmg_control_panel .dot {
+                                    width: 12px;
+                                    height: 12px;
+                                    background: white;
+                                    border-radius: 50%;
+                                    animation: pulse 1.5s infinite;
+                                }
+                                #__wmg_control_panel .text {
+                                    color: white;
+                                    font-size: 14px;
+                                    font-weight: 600;
+                                }
+                                @keyframes pulse {
+                                    0%, 100% { opacity: 1; }
+                                    50% { opacity: 0.5; }
+                                }
+                            </style>
+                            <div class="dot"></div>
+                            <span class="text">Stop (F2)</span>
+                        `;
+                        panel.addEventListener('click', () => {
+                            if (window.__wmg_stop_recording) {
+                                window.__wmg_stop_recording();
+                            }
+                        });
+                        document.body.appendChild(panel);
+                    }
+
+                    // Cleanup function
+                    window.__wmg_cleanup = function() {
+                        const panel = document.getElementById('__wmg_control_panel');
+                        if (panel) panel.remove();
+                    };
+
+                    // Helper function to check if an ID is dynamic/unstable
+                    function isDynamicId(id) {
+                        if (!id) return true;
+                        const dynamicPatterns = [
+                            /^mantine-/,      // Mantine UI
+                            /^radix-/,        // Radix UI
+                            /^react-/,        // React
+                            /^:r[0-9a-z]+:/,  // React 18+ useId
+                            /^headlessui-/,   // Headless UI
+                            /^mui-/,          // Material UI
+                            /^chakra-/,       // Chakra UI
+                            /^__wmg/,         // Our own internal IDs
+                            /^[0-9a-f]{8}-/,  // UUID-like IDs
+                            /^ember[0-9]+/,   // Ember
+                            /^_[0-9]+$/,      // Numeric underscore IDs
+                        ];
+                        return dynamicPatterns.some(p => p.test(id));
+                    }
+
+                    // Helper function to generate CSS selector
+                    function getSelector(element) {
+                        // 1. Try stable ID first
+                        if (element.id && !isDynamicId(element.id)) {
+                            return '#' + element.id;
+                        }
+
+                        // 2. Try data-testid
+                        if (element.dataset && element.dataset.testid) {
+                            return '[data-testid="' + element.dataset.testid + '"]';
+                        }
+
+                        // 3. Try name attribute
+                        if (element.name) {
+                            return '[name="' + element.name + '"]';
+                        }
+
+                        // 4. Try aria-label
+                        const ariaLabel = element.getAttribute('aria-label');
+                        if (ariaLabel && ariaLabel.length < 50) {
+                            return '[aria-label="' + ariaLabel + '"]';
+                        }
+
+                        // 5. Check if element is inside a button or link (for nested elements like spans)
+                        const parentButton = element.closest('button, [role="button"]');
+                        const parentLink = element.closest('a, [role="link"]');
+                        const text = element.textContent ? element.textContent.trim() : '';
+
+                        if (parentButton && text && text.length < 30 && text.indexOf('\\n') === -1) {
+                            return 'button:has-text("' + text + '")';
+                        }
+                        if (parentLink && text && text.length < 30 && text.indexOf('\\n') === -1) {
+                            return 'a:has-text("' + text + '")';
+                        }
+
+                        // 6. Try role + text for buttons/links (direct element)
+                        const role = element.getAttribute('role');
+                        if ((element.tagName === 'BUTTON' || role === 'button') && text && text.length < 30 && text.indexOf('\\n') === -1) {
+                            return 'button:has-text("' + text + '")';
+                        }
+                        if ((element.tagName === 'A' || role === 'link') && text && text.length < 30 && text.indexOf('\\n') === -1) {
+                            return 'a:has-text("' + text + '")';
+                        }
+
+                        // 7. For any element with short text, use text selector
+                        if (text && text.length > 0 && text.length < 30 && text.indexOf('\\n') === -1) {
+                            return 'text="' + text + '"';
+                        }
+
+                        // 8. Fallback to path-based selector
+                        const path = [];
+                        while (element && element.nodeType === Node.ELEMENT_NODE) {
+                            let selector = element.tagName.toLowerCase();
+                            if (element.className && typeof element.className === 'string') {
+                                const classes = element.className.trim().split(/\\s+/).filter(function(c) {
+                                    if (!c || c.startsWith('__wmg')) return false;
+                                    if (/^m_[a-z0-9]+$/.test(c)) return false;  // Mantine
+                                    if (/^css-[a-z0-9]+$/.test(c)) return false;  // Emotion
+                                    if (/^sc-[a-z]+$/.test(c)) return false;  // Styled Components
+                                    return true;
+                                });
+                                if (classes.length > 0) {
+                                    selector += '.' + classes.slice(0, 2).join('.');
+                                }
+                            }
+                            const siblings = element.parentNode ?
+                                Array.from(element.parentNode.children).filter(function(e) { return e.tagName === element.tagName; }) : [];
+                            if (siblings.length > 1) {
+                                const index = siblings.indexOf(element) + 1;
+                                selector += ':nth-of-type(' + index + ')';
+                            }
+                            path.unshift(selector);
+                            if (path.length >= 3) break;
+                            element = element.parentNode;
+                        }
+                        return path.join(' > ');
+                    }
+                })();
+            """)
+        except Exception as e:
+            console.print(f"[dim]Script injection note: {e}[/dim]")
+
+    async def _on_navigation(self, frame) -> None:
+        """Handle page navigation events to catch missed click-triggered navigations."""
+        try:
+            if not self._is_recording or not self._page:
+                return
+
+            # Only track main frame navigation
+            try:
+                if frame != self._page.main_frame:
+                    return
+            except Exception:
+                # Page context might be invalid after cross-origin navigation
+                return
+
+            new_url = frame.url
+
+            # Skip about:blank and empty URLs
+            if not new_url or new_url == "about:blank":
+                return
+
+            # Skip if no steps recorded yet (initial navigation is already handled)
+            if not self.action_log.steps:
+                return
+
+            last_step = self.action_log.get_last_step()
+            if not last_step:
+                return
+
+            # Skip if last step was already a navigate to this URL
+            if last_step.action == "navigate" and last_step.url == new_url:
+                return
+
+            # Server-side deduplication: skip if same host navigated recently
+            from urllib.parse import urlparse
+            new_parsed = urlparse(new_url)
+            now = datetime.now()
+            if self._last_recorded_navigate:
+                last_url = self._last_recorded_navigate.get("url", "")
+                last_time = self._last_recorded_navigate.get("time")
+                last_parsed = urlparse(last_url)
+                # Skip if navigating to same host within debounce window
+                if last_parsed.netloc == new_parsed.netloc and last_time:
+                    elapsed_ms = (now - last_time).total_seconds() * 1000
+                    if elapsed_ms < self._debounce_ms:
+                        console.print(f"  [dim]Skipping duplicate navigate: {new_parsed.netloc}[/dim]")
+                        return
+
+            # Check if the page URL changed from the last recorded step
+            if last_step.page_url:
+                from urllib.parse import urlparse
+                old_parsed = urlparse(last_step.page_url)
+                new_parsed = urlparse(new_url)
+
+                # Detect cross-origin navigation or significant path change
+                if old_parsed.netloc != new_parsed.netloc:
+                    # Cross-origin navigation detected
+                    # Check if we have a pending click that wasn't recorded
+                    if self._last_click_info and not self._last_click_recorded:
+                        # Record the click that triggered navigation
+                        click_desc = get_text("click_element", self.language).format(
+                            element=self._last_click_info.get("text", "")[:50] or self._last_click_info.get("tag_name", "element")
+                        )
+                        console.print(f"  [auto] Recording missed click: {click_desc}")
+
+                        # Add the missed click step (with the OLD page URL)
+                        self.action_log.add_step(
+                            action="click",
+                            selector=self._last_click_info.get("selector"),
+                            description=click_desc + " (触发页面跳转)",
+                            page_title=self._last_click_info.get("page_title"),
+                            page_url=self._last_click_info.get("page_url"),
+                        )
+                        self._last_click_recorded = True
+
+                    # Record the navigation
+                    nav_desc = get_text("navigate_to", self.language).format(url=new_url)
+                    console.print(f"  [auto] Detected navigation to: {new_url}")
+
+                    # Try to get page title, but don't fail if page context is invalid
+                    page_title = ""
+                    try:
+                        page_title = await self._page.title()
+                    except Exception:
+                        pass
+
+                    self.action_log.add_step(
+                        action="navigate",
+                        url=new_url,
+                        description=nav_desc,
+                        page_title=page_title,
+                        page_url=new_url,
+                    )
+                    self.chapter_marker.mark_chapter(nav_desc)
+
+                    # Update navigation deduplication tracking
+                    self._last_recorded_navigate = {"url": new_url, "time": now}
+
+                    # Clear pending click info
+                    self._last_click_info = None
+
+        except Exception as e:
+            # Log error but don't crash the recording
+            console.print(f"[yellow]Warning: Navigation tracking error: {e}[/yellow]")
+
+    async def _on_page_load(self) -> None:
+        """Re-inject recording script after page load (handles cross-origin navigation)."""
+        if not self._is_recording or not self._page:
+            return
+
+        # Small delay to ensure page is ready
+        await asyncio.sleep(0.1)
+
+        # Re-inject the recording script (context.add_init_script should handle this,
+        # but this is a fallback for cases where it doesn't work)
+        await self._inject_recording_script(self._page)
+
     async def _on_mouse_move(self, x: int, y: int) -> None:
         """Track mouse position for cursor display."""
         self._last_mouse_position = (int(x), int(y))
@@ -348,20 +836,59 @@ class ActionRecorder:
         # Update mouse position
         self._last_mouse_position = (int(mouse_x), int(mouse_y))
 
+        # Server-side deduplication: skip if same selector clicked recently
+        now = datetime.now()
+        if self._last_recorded_click:
+            last_selector = self._last_recorded_click.get("selector")
+            last_time = self._last_recorded_click.get("time")
+            if last_selector == selector and last_time:
+                elapsed_ms = (now - last_time).total_seconds() * 1000
+                if elapsed_ms < self._debounce_ms:
+                    console.print(f"  [dim]Skipping duplicate click: {selector}[/dim]")
+                    return
+
+        # Store click info before recording (for navigation detection)
+        self._last_click_info = {
+            "selector": selector,
+            "text": text,
+            "tag_name": tag_name,
+            "page_url": self._page.url if self._page else None,
+            "page_title": await self._page.title() if self._page else None,
+        }
+        self._last_click_recorded = False
+
         description = get_text("click_element", self.language).format(
             element=text[:50] if text else tag_name
         )
 
-        await self._record_action(
-            action="click",
-            selector=selector,
-            description=description,
-        )
+        try:
+            await self._record_action(
+                action="click",
+                selector=selector,
+                description=description,
+            )
+            self._last_click_recorded = True
+            # Update deduplication tracking
+            self._last_recorded_click = {"selector": selector, "time": now}
+        except Exception as e:
+            console.print(f"[yellow]Warning: Click recording failed: {e}[/yellow]")
 
     async def _on_input(self, selector: str, value: str, input_type: str) -> None:
         """Handle recorded input action."""
         if not self._is_recording:
             return
+
+        # Server-side deduplication: skip if same selector+value recorded recently
+        now = datetime.now()
+        if self._last_recorded_input:
+            last_selector = self._last_recorded_input.get("selector")
+            last_value = self._last_recorded_input.get("value")
+            last_time = self._last_recorded_input.get("time")
+            if last_selector == selector and last_value == value and last_time:
+                elapsed_ms = (now - last_time).total_seconds() * 1000
+                if elapsed_ms < self._debounce_ms:
+                    console.print(f"  [dim]Skipping duplicate input: {selector}[/dim]")
+                    return
 
         # Mask password inputs
         display_value = "***" if input_type == "password" else value[:50]
@@ -374,6 +901,9 @@ class ActionRecorder:
             value=value if input_type != "password" else "",
             description=description,
         )
+
+        # Update deduplication tracking
+        self._last_recorded_input = {"selector": selector, "value": value, "time": now}
 
     async def _record_action(
         self,

@@ -54,13 +54,34 @@ async def list_projects(
     List all projects.
 
     Returns a list of projects with optional filtering by status and tags.
+    Recording counts are refreshed by scanning the actual recordings directories.
     """
     manager = get_manager()
     projects = manager.list_projects(status=status, tags=tags)
 
+    # Refresh recording counts by scanning actual directories
+    responses = []
+    for p in projects:
+        # Get actual recording count by scanning directory
+        actual_recordings = manager.list_recordings(p.slug)
+        actual_count = len(actual_recordings)
+
+        responses.append(ProjectResponse(
+            id=p.id,
+            slug=p.slug,
+            name=p.name,
+            description=p.description,
+            base_url=None,
+            created_at=p.created_at,
+            updated_at=p.updated_at,
+            recording_count=actual_count,  # Use actual count from directory scan
+            tags=p.tags,
+            status=p.status,
+        ))
+
     return ProjectListResponse(
-        projects=[project_to_response(p) for p in projects],
-        total=len(projects),
+        projects=responses,
+        total=len(responses),
     )
 
 

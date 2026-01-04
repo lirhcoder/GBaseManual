@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse
 
-from .api import projects, recordings, manual
+from .api import projects, recordings, manual, testing
 
 
 def create_app() -> FastAPI:
@@ -56,6 +56,11 @@ def create_app() -> FastAPI:
         manual.router,
         prefix="/api/v1/manual",
         tags=["manual"]
+    )
+    app.include_router(
+        testing.router,
+        prefix="/api/v1/test",
+        tags=["testing"]
     )
 
     # Health check endpoint
@@ -137,3 +142,15 @@ def create_app() -> FastAPI:
 
 # Create the default app instance
 app = create_app()
+
+
+if __name__ == "__main__":
+    import sys
+    import uvicorn
+
+    port = 8081
+    for i, arg in enumerate(sys.argv):
+        if arg == "--port" and i + 1 < len(sys.argv):
+            port = int(sys.argv[i + 1])
+
+    uvicorn.run(app, host="0.0.0.0", port=port)

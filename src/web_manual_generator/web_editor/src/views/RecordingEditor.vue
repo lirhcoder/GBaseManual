@@ -9,11 +9,13 @@ import {
   useMessage, useDialog
 } from 'naive-ui'
 import { VueDraggable } from 'vue-draggable-plus'
-import { recordingsApi, manualApi, videoApi, type Step, type VideoInfo } from '@/api/client'
+import { recordingsApi, manualApi, videoApi, testingApi, type Step, type VideoInfo, type TestConfig } from '@/api/client'
 import ImageEditor from '@/components/editor/ImageEditor.vue'
 import AddStepModal, { type NewStepData } from '@/components/editor/AddStepModal.vue'
 import BatchOperations from '@/components/editor/BatchOperations.vue'
 import VideoPlayer from '@/components/editor/VideoPlayer.vue'
+import TestRunModal from '@/components/test/TestRunModal.vue'
+import TestProgress from '@/components/test/TestProgress.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -54,6 +56,12 @@ const addingStep = ref(false)
 // Video player
 const showVideoPlayer = ref(false)
 const videoInfo = ref<VideoInfo | null>(null)
+
+// Testing
+const showTestModal = ref(false)
+const showTestProgress = ref(false)
+const currentTestId = ref('')
+const startFromStep = ref(1)  // 从第几步开始验证
 
 // API Key settings
 const showSettingsModal = ref(false)
@@ -482,6 +490,44 @@ async function handleFrameCaptured(stepId: number | null) {
   // Note: VideoPlayer already shows success message, no need to duplicate
 }
 
+// Test functions
+async function handleStartTest(config: TestConfig) {
+  try {
+    const { data } = await testingApi.run(projectSlug.value, recordingName.value, config)
+    currentTestId.value = data.test_id
+    showTestProgress.value = true
+    message.success(config.startFromStep && config.startFromStep > 1
+      ? `测试已启动（从第${config.startFromStep}步开始验证）`
+      : '测试已启动')
+  } catch (error: any) {
+    message.error(error.displayMessage || '启动测试失败')
+  }
+}
+
+function handleTestComplete(result: any) {
+  if (result.success) {
+    message.success(`测试通过 (${result.passed_steps}/${result.total_steps})`)
+  } else {
+    message.warning(`测试失败 (${result.passed_steps}/${result.total_steps})`)
+  }
+}
+
+function handleRerunFromStep(stepId: number) {
+  startFromStep.value = stepId
+  showTestModal.value = true
+}
+
+function openTestModal() {
+  startFromStep.value = 1  // 重置为从第1步开始
+  showTestModal.value = true
+}
+
+function exportScript() {
+  const url = testingApi.exportScriptUrl(projectSlug.value, recordingName.value, currentLang.value)
+  window.open(url, '_blank')
+  message.success('脚本下载已开始')
+}
+
 onMounted(() => {
   loadApiKeys()
   loadRecording()
@@ -505,10 +551,11 @@ onUnmounted(() => {
     >
       <div class="sidebar-header">
         <NBreadcrumb>
-          <NBreadcrumbItem @click="router.push('/')">项目</NBreadcrumbItem>
+          <NBreadcrumbItem @click="router.push('/')">项目列表</NBreadcrumbItem>
           <NBreadcrumbItem @click="router.push(`/projects/${projectSlug}`)">
             {{ projectSlug }}
           </NBreadcrumbItem>
+          <NBreadcrumbItem>{{ title || recordingName }}</NBreadcrumbItem>
         </NBreadcrumb>
         <h3>{{ title }}</h3>
       </div>
@@ -588,6 +635,9 @@ onUnmounted(() => {
     <NLayout>
       <NLayoutHeader class="editor-header">
         <NSpace>
+          <NButton @click="router.push(`/projects/${projectSlug}`)">
+            ← 返回录制列表
+          </NButton>
           <NTooltip trigger="hover">
             <template #trigger>
               <NButton quaternary size="small">快捷键</NButton>
@@ -610,6 +660,8 @@ onUnmounted(() => {
           <NButton @click="openPreview">预览手册</NButton>
           <NButton type="primary" @click="generateManual('html')">导出 HTML</NButton>
           <NButton @click="generateManual('pdf')">导出 PDF</NButton>
+          <NButton type="info" @click="openTestModal">运行测试</NButton>
+          <NButton @click="exportScript">导出脚本</NButton>
           <NButton quaternary @click="showSettingsModal = true">⚙ 设置</NButton>
         </NSpace>
       </NLayoutHeader>
@@ -825,6 +877,23 @@ onUnmounted(() => {
       v-model:show="showAddStepModal"
       :insert-after-step-id="addStepAfter"
       @add="handleAddStep"
+    />
+
+    <!-- Test Run Modal -->
+    <TestRunModal
+      v-model:show="showTestModal"
+      :start-from-step="startFromStep"
+      @start="handleStartTest"
+    />
+
+    <!-- Test Progress Modal -->
+    <TestProgress
+      v-model:show="showTestProgress"
+      :test-id="currentTestId"
+      :project-id="projectSlug"
+      :recording-id="recordingName"
+      @complete="handleTestComplete"
+      @rerun-from-step="handleRerunFromStep"
     />
   </NLayout>
 </template>

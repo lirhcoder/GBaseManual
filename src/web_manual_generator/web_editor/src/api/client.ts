@@ -147,6 +147,9 @@ export const recordingsApi = {
   deleteStep: (projectSlug: string, recordingName: string, stepId: number) =>
     api.delete(`/recordings/${projectSlug}/${recordingName}/steps/${stepId}`),
 
+  deleteRecording: (projectSlug: string, recordingName: string) =>
+    api.delete(`/recordings/${projectSlug}/${recordingName}`),
+
   reorderSteps: (projectSlug: string, recordingName: string, stepIds: number[]) =>
     api.post(`/recordings/${projectSlug}/${recordingName}/steps/reorder`, { step_ids: stepIds }),
 
@@ -246,4 +249,167 @@ export const videoApi = {
       headers: { 'Content-Type': 'multipart/form-data' },
     })
   },
+}
+
+
+// ==================== Testing API ====================
+
+export interface TestConfig {
+  screenshotCompare: boolean
+  compareMode: 'pixel' | 'ai'
+  threshold: number
+  aiStrictness: 'lenient' | 'normal' | 'strict'
+  elementCheck: boolean
+  headless: boolean
+  stepDelay: number
+  startFromStep?: number  // 从第几步开始验证（之前的步骤快速回放）
+  aiProvider?: 'gemini' | 'claude' | 'openai'
+  googleApiKey?: string
+  anthropicApiKey?: string
+  openaiApiKey?: string
+  // Debug模式配置
+  debugMode?: boolean
+  aiInTheLoop?: boolean
+  aiAutoSkip?: boolean
+  aiAutoFix?: boolean
+  pauseOnFailure?: boolean
+  maxAutoRetries?: number
+  // 测试变量（用于密码等敏感信息）
+  testVariables?: Record<string, string>
+}
+
+export interface AIAnalysis {
+  step_id: number
+  action_type: string
+  analysis_type: string  // "pre_execution" | "failure_diagnosis" | "skip_decision"
+  should_skip: boolean
+  skip_reason: string
+  should_modify: boolean
+  suggested_selector: string
+  confidence: number
+  analysis_text: string
+  screenshot_path: string
+}
+
+export interface DebugStatus {
+  paused: boolean
+  debug_mode: boolean
+  ai_in_the_loop: boolean
+  pending_selector_fix: string | null
+  waiting_for_confirmation: boolean
+  current_step: number
+  current_step_description: string
+  ai_analysis: AIAnalysis | null
+  user_ai_prompt: string
+}
+
+export type DebugAction = 'continue' | 'retry' | 'skip' | 'modify' | 'abort'
+
+export interface TestRunResponse {
+  test_id: string
+  status: string
+  message: string
+}
+
+export interface TestStatus {
+  test_id: string
+  status: string
+  current_step: number
+  total_steps: number
+  current_step_description: string
+  progress_percent: number
+}
+
+export interface TestResult {
+  test_id: string
+  status: string
+  success: boolean
+  total_steps: number
+  passed_steps: number
+  failed_steps: number
+  duration_ms: number
+  started_at: string | null
+  completed_at: string | null
+  error_message: string | null
+  steps: TestStepResult[]
+}
+
+export interface TestStepResult {
+  step_id: number
+  step_description: string
+  action_type: string
+  executed: boolean
+  execution_error: string | null
+  execution_time_ms: number
+  passed: boolean
+  verifications: any[]
+}
+
+export interface TestRunInfo {
+  test_id: string
+  status: string
+  success: boolean
+  total_steps: number
+  passed_steps: number
+  failed_steps: number
+  started_at: string | null
+  run_dir: string
+}
+
+export const testingApi = {
+  run: (projectSlug: string, recordingName: string, config: TestConfig) =>
+    api.post<TestRunResponse>(`/test/run/${projectSlug}/${recordingName}`, {
+      screenshot_compare: config.screenshotCompare,
+      screenshot_compare_mode: config.compareMode,
+      element_check: config.elementCheck,
+      threshold: config.threshold,
+      ai_strictness: config.aiStrictness,
+      headless: config.headless,
+      step_delay: config.stepDelay,
+      start_from_step: config.startFromStep || 1,
+      ai_provider: config.aiProvider || 'gemini',
+      google_api_key: config.googleApiKey || null,
+      anthropic_api_key: config.anthropicApiKey || null,
+      openai_api_key: config.openaiApiKey || null,
+      // Debug模式配置
+      debug_mode: config.debugMode || false,
+      ai_in_the_loop: config.aiInTheLoop || false,
+      ai_auto_skip: config.aiAutoSkip ?? true,
+      ai_auto_fix: config.aiAutoFix ?? true,
+      pause_on_failure: config.pauseOnFailure ?? true,
+      max_auto_retries: config.maxAutoRetries ?? 2,
+      // 测试变量
+      test_variables: config.testVariables || {},
+    }),
+
+  getStatus: (testId: string) =>
+    api.get<TestStatus>(`/test/status/${testId}`),
+
+  getResult: (testId: string) =>
+    api.get<TestResult>(`/test/result/${testId}`),
+
+  cancel: (testId: string) =>
+    api.post(`/test/cancel/${testId}`),
+
+  listRuns: (projectSlug: string, recordingName: string) =>
+    api.get<TestRunInfo[]>(`/test/runs/${projectSlug}/${recordingName}`),
+
+  getReportUrl: (projectSlug: string, recordingName: string, testId: string) =>
+    `/api/v1/test/report/${projectSlug}/${recordingName}/${testId}`,
+
+  getWebSocketUrl: (testId: string) => {
+    const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const host = window.location.host
+    return `${wsProtocol}//${host}/api/v1/test/ws/${testId}`
+  },
+
+  exportScriptUrl: (projectSlug: string, recordingName: string, language = 'zh', headless = false, stepDelay = 0.5) =>
+    `/api/v1/test/export/${projectSlug}/${recordingName}?language=${language}&headless=${headless}&step_delay=${stepDelay}`,
+
+  // Debug模式API
+  sendDebugAction: (testId: string, action: DebugAction, newSelector?: string, userAiPrompt?: string) =>
+    api.post(`/test/debug/${testId}`, { action, new_selector: newSelector, user_ai_prompt: userAiPrompt }),
+
+  getDebugStatus: (testId: string) =>
+    api.get<DebugStatus>(`/test/debug/status/${testId}`),
 }

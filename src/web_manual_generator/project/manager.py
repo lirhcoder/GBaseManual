@@ -367,6 +367,56 @@ class ProjectManager:
 
         return sorted(recordings, key=lambda r: r.created_at, reverse=True)
 
+    def get_recording(self, slug: str, folder_name: str) -> Optional[RecordingInfo]:
+        """
+        Get a specific recording by folder name.
+
+        Args:
+            slug: Project slug
+            folder_name: Recording folder name
+
+        Returns:
+            RecordingInfo if found, None otherwise
+        """
+        recording_dir = self.get_recording_dir(slug, folder_name)
+        if not recording_dir.exists():
+            return None
+
+        action_log_path = recording_dir / "action_log.json"
+        if not action_log_path.exists():
+            return None
+
+        # Parse folder name for date and title
+        from .utils import parse_recording_folder_name
+        created_date, title = parse_recording_folder_name(folder_name)
+
+        # Try to load action log for more info
+        step_count = 0
+        try:
+            import json
+            with open(action_log_path, "r", encoding="utf-8") as f:
+                action_log = json.load(f)
+                step_count = len(action_log.get("steps", []))
+                if action_log.get("title"):
+                    title = action_log["title"]
+        except Exception:
+            pass
+
+        # Check for manual and video
+        has_manual = (recording_dir / "manual").exists()
+        has_video = (recording_dir / "videos").exists() and any((recording_dir / "videos").iterdir())
+
+        return RecordingInfo(
+            id=folder_name,
+            folder_name=folder_name,
+            title=title,
+            created_at=created_date or datetime.fromtimestamp(recording_dir.stat().st_ctime),
+            updated_at=datetime.fromtimestamp(recording_dir.stat().st_mtime),
+            step_count=step_count,
+            has_manual=has_manual,
+            has_video=has_video,
+        )
+
     def create_recording(
         self,
         slug: str,

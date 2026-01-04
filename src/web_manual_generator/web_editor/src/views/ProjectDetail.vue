@@ -1,18 +1,20 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { h } from 'vue'
 import {
   NLayout, NLayoutHeader, NLayoutContent,
   NCard, NButton, NSpace, NEmpty, NDataTable, NBreadcrumb,
   NBreadcrumbItem, NTag, NIcon, NModal, NForm, NFormItem,
   NInput, NSwitch,
-  useMessage
+  useMessage, useDialog
 } from 'naive-ui'
 import { projectsApi, recordingsApi, type Project, type Recording } from '@/api/client'
 
 const route = useRoute()
 const router = useRouter()
 const message = useMessage()
+const dialog = useDialog()
 
 const projectSlug = computed(() => route.params.slug as string)
 const loading = ref(false)
@@ -22,11 +24,19 @@ const recordings = ref<Recording[]>([])
 // Recording modal
 const showRecordModal = ref(false)
 const recordingForm = ref({
-  url: '',
+  url: 'https://',
   title: '',
   showCursor: true,
 })
 const startingRecord = ref(false)
+
+function openRecordModal() {
+  // Default to project's base_url if available, otherwise https://
+  recordingForm.value.url = project.value?.base_url || 'https://'
+  recordingForm.value.title = ''
+  recordingForm.value.showCursor = true
+  showRecordModal.value = true
+}
 
 async function loadProject() {
   loading.value = true
@@ -63,7 +73,7 @@ async function startRecording() {
       message.success('录制已启动，浏览器窗口将打开。录制完成后按 F2 或点击停止按钮结束。')
       showRecordModal.value = false
       // Reset form
-      recordingForm.value = { url: '', title: '', showCursor: true }
+      recordingForm.value = { url: 'https://', title: '', showCursor: true }
       // Refresh recordings list after a delay
       setTimeout(() => loadProject(), 3000)
     } else {
@@ -78,6 +88,25 @@ async function startRecording() {
 
 function goToEditor(recording: Recording) {
   router.push(`/projects/${projectSlug.value}/${recording.folder_name}`)
+}
+
+function confirmDeleteRecording(recording: Recording, event: Event) {
+  event.stopPropagation()  // Prevent row click
+  dialog.warning({
+    title: '确认删除',
+    content: `确定要删除录制 "${recording.title || recording.folder_name}" 吗？此操作不可恢复。`,
+    positiveText: '删除',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        await recordingsApi.deleteRecording(projectSlug.value, recording.folder_name)
+        recordings.value = recordings.value.filter(r => r.folder_name !== recording.folder_name)
+        message.success('录制已删除')
+      } catch (error: any) {
+        message.error(error.displayMessage || '删除失败')
+      }
+    },
+  })
 }
 
 function formatDate(dateStr: string) {
@@ -123,6 +152,21 @@ const columns = [
     width: 160,
     render: (row: Recording) => formatDate(row.created_at),
   },
+  {
+    title: '操作',
+    key: 'actions',
+    width: 100,
+    render: (row: Recording) => {
+      return h(NSpace, { size: 'small' }, () => [
+        h(NButton, {
+          size: 'small',
+          type: 'error',
+          ghost: true,
+          onClick: (e: Event) => confirmDeleteRecording(row, e)
+        }, () => '删除')
+      ])
+    }
+  },
 ]
 
 onMounted(loadProject)
@@ -132,14 +176,17 @@ onMounted(loadProject)
   <NLayout class="layout">
     <NLayoutHeader class="header">
       <div class="header-content">
-        <NBreadcrumb>
-          <NBreadcrumbItem @click="router.push('/')">
-            项目列表
-          </NBreadcrumbItem>
-          <NBreadcrumbItem>
-            {{ project?.name || projectSlug }}
-          </NBreadcrumbItem>
-        </NBreadcrumb>
+        <NSpace align="center">
+          <NButton @click="router.push('/')">← 返回项目列表</NButton>
+          <NBreadcrumb>
+            <NBreadcrumbItem @click="router.push('/')">
+              项目列表
+            </NBreadcrumbItem>
+            <NBreadcrumbItem>
+              {{ project?.name || projectSlug }}
+            </NBreadcrumbItem>
+          </NBreadcrumb>
+        </NSpace>
       </div>
     </NLayoutHeader>
 
@@ -166,7 +213,7 @@ onMounted(loadProject)
             <NButton @click="loadProject" :loading="loading">
               刷新
             </NButton>
-            <NButton type="primary" @click="showRecordModal = true">
+            <NButton type="primary" @click="openRecordModal">
               开始录制
             </NButton>
           </NSpace>
@@ -174,7 +221,7 @@ onMounted(loadProject)
 
         <NEmpty v-if="recordings.length === 0" description="暂无录制">
           <template #extra>
-            <NButton type="primary" @click="showRecordModal = true">
+            <NButton type="primary" @click="openRecordModal">
               开始录制
             </NButton>
           </template>
@@ -300,12 +347,14 @@ code {
 }
 
 .record-tips kbd {
-  background: #fff;
-  border: 1px solid #ccc;
-  border-radius: 3px;
-  padding: 2px 6px;
+  background: #333;
+  color: #fff;
+  border: 1px solid #555;
+  border-radius: 4px;
+  padding: 2px 8px;
   font-family: monospace;
   font-size: 12px;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.2);
 }
 
 .record-tips .stop-btn {

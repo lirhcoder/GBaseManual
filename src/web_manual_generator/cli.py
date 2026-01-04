@@ -788,6 +788,309 @@ def move_recording(project_slug: str, recording_name: str, to_project: str):
         console.print("[red]Error: Could not move recording. Check project/recording names.[/red]")
 
 
+# ==================== Test Commands ====================
+
+@main.group()
+def test():
+    """
+    Automated testing commands.
+
+    自动化测试命令 / 自動テストコマンド
+    """
+    pass
+
+
+@test.command("run")
+@click.argument("project_slug")
+@click.argument("recording_name")
+@click.option(
+    "--no-screenshot-compare",
+    is_flag=True,
+    help="Disable screenshot comparison / 禁用截图对比",
+)
+@click.option(
+    "--no-element-check",
+    is_flag=True,
+    help="Disable element checking / 禁用元素检查",
+)
+@click.option(
+    "--compare-mode", "-m",
+    type=click.Choice(["pixel", "ai"]),
+    default="pixel",
+    help="Screenshot comparison mode / 截图对比模式",
+)
+@click.option(
+    "--threshold", "-t",
+    type=float,
+    default=0.05,
+    help="Pixel difference threshold (0-1) / 像素差异阈值",
+)
+@click.option(
+    "--ai-strictness",
+    type=click.Choice(["lenient", "normal", "strict"]),
+    default="normal",
+    help="AI comparison strictness / AI对比严格程度",
+)
+@click.option(
+    "--headless/--no-headless",
+    default=True,
+    help="Run in headless mode / 无头模式",
+)
+@click.option(
+    "--report/--no-report",
+    default=True,
+    help="Generate HTML report / 生成HTML报告",
+)
+def test_run(
+    project_slug: str,
+    recording_name: str,
+    no_screenshot_compare: bool,
+    no_element_check: bool,
+    compare_mode: str,
+    threshold: float,
+    ai_strictness: str,
+    headless: bool,
+    report: bool,
+):
+    """
+    Run automated test for a recording.
+
+    运行录制的自动化测试 / 録画の自動テストを実行
+
+    Example:
+        web-manual test run my-project login-test
+        web-manual test run my-project login-test --compare-mode ai --ai-strictness strict
+    """
+    from .project import ProjectManager
+    from .testing import TestConfig, CompareMode, AIStrictness, run_test, generate_report
+
+    manager = ProjectManager()
+    project = manager.get_project(project_slug)
+
+    if not project:
+        console.print(f"[red]Error: Project '{project_slug}' not found[/red]")
+        return
+
+    recording = manager.get_recording(project_slug, recording_name)
+    if not recording:
+        console.print(f"[red]Error: Recording '{recording_name}' not found[/red]")
+        return
+
+    recording_dir = manager.get_recording_dir(project_slug, recording_name)
+
+    # Build config
+    config = TestConfig(
+        screenshot_compare=not no_screenshot_compare,
+        screenshot_compare_mode=CompareMode(compare_mode),
+        element_check=not no_element_check,
+        threshold=threshold,
+        ai_strictness=AIStrictness(ai_strictness),
+        headless=headless,
+        generate_report=report,
+    )
+
+    console.print(Panel(
+        f"[bold]Running Automated Test[/bold]\n\n"
+        f"Project: {project_slug}\n"
+        f"Recording: {recording_name}\n"
+        f"Screenshot Compare: {not no_screenshot_compare} ({compare_mode})\n"
+        f"Element Check: {not no_element_check}\n"
+        f"Headless: {headless}",
+        title="Web Manual Generator - Test",
+        border_style="blue",
+    ))
+
+    # Run test
+    def progress_callback(progress):
+        console.print(
+            f"  [{progress.current_step}/{progress.total_steps}] "
+            f"{progress.current_step_description[:50]}..."
+        )
+
+    result = asyncio.run(run_test(
+        project_id=project_slug,
+        recording_id=recording_name,
+        recording_dir=recording_dir,
+        config=config,
+        progress_callback=progress_callback,
+    ))
+
+    # Generate report
+    if report and result.steps:
+        from pathlib import Path
+        test_run_dir = Path(recording_dir) / "test_runs"
+        # Find the latest test run
+        latest_run = max(test_run_dir.iterdir(), key=lambda p: p.stat().st_mtime)
+        report_path = generate_report(latest_run, result)
+        if report_path:
+            console.print(f"\n[blue]Report generated: {report_path}[/blue]")
+
+    # Summary
+    status_color = "green" if result.success else "red"
+    console.print(Panel(
+        f"[{status_color}]Status: {result.status.value}[/{status_color}]\n\n"
+        f"Total Steps: {result.total_steps}\n"
+        f"Passed: {result.passed_steps}\n"
+        f"Failed: {result.failed_steps}\n"
+        f"Duration: {result.duration_ms}ms",
+        title="Test Result",
+        border_style=status_color,
+    ))
+
+
+@test.command("list")
+@click.argument("project_slug")
+@click.argument("recording_name")
+def test_list(project_slug: str, recording_name: str):
+    """
+    List test runs for a recording.
+
+    列出录制的测试运行记录 / 録画のテスト実行履歴を一覧表示
+
+    Example:
+        web-manual test list my-project login-test
+    """
+    from rich.table import Table
+    from .project import ProjectManager
+    from .testing import get_test_runs
+
+    manager = ProjectManager()
+    recording_dir = manager.get_recording_dir(project_slug, recording_name)
+
+    if not recording_dir.exists():
+        console.print(f"[red]Error: Recording '{recording_name}' not found[/red]")
+        return
+
+    runs = get_test_runs(recording_dir)
+
+    if not runs:
+        console.print(f"[yellow]No test runs found for '{recording_name}'[/yellow]")
+        return
+
+    table = Table(title=f"Test Runs for '{recording_name}'")
+    table.add_column("Test ID", style="cyan")
+    table.add_column("Status")
+    table.add_column("Passed", justify="right")
+    table.add_column("Failed", justify="right")
+    table.add_column("Started")
+
+    for run in runs:
+        status = run.get("status", "unknown")
+        status_icon = "✓" if run.get("success") else "✗"
+        status_color = "green" if run.get("success") else "red"
+
+        table.add_row(
+            run.get("test_id", "?"),
+            f"[{status_color}]{status_icon} {status}[/{status_color}]",
+            str(run.get("passed_steps", 0)),
+            str(run.get("failed_steps", 0)),
+            run.get("started_at", "?")[:19] if run.get("started_at") else "?",
+        )
+
+    console.print(table)
+
+
+@test.command("report")
+@click.argument("project_slug")
+@click.argument("recording_name")
+@click.option(
+    "--test-id", "-t",
+    default=None,
+    help="Specific test ID (default: latest)",
+)
+@click.option(
+    "--open", "-o", "open_browser",
+    is_flag=True,
+    help="Open report in browser / 在浏览器中打开",
+)
+def test_report(project_slug: str, recording_name: str, test_id: Optional[str], open_browser: bool):
+    """
+    View or regenerate test report.
+
+    查看或重新生成测试报告 / テストレポートを表示または再生成
+
+    Example:
+        web-manual test report my-project login-test --open
+    """
+    from pathlib import Path
+    from .project import ProjectManager
+    from .testing import generate_report
+
+    manager = ProjectManager()
+    recording_dir = manager.get_recording_dir(project_slug, recording_name)
+    test_runs_dir = recording_dir / "test_runs"
+
+    if not test_runs_dir.exists():
+        console.print(f"[red]Error: No test runs found[/red]")
+        return
+
+    # Find test run directory
+    if test_id:
+        # Find by test ID
+        matching = [d for d in test_runs_dir.iterdir() if test_id in d.name]
+        if not matching:
+            console.print(f"[red]Error: Test run '{test_id}' not found[/red]")
+            return
+        test_run_dir = matching[0]
+    else:
+        # Use latest
+        test_run_dir = max(test_runs_dir.iterdir(), key=lambda p: p.stat().st_mtime)
+
+    # Check for existing report
+    report_path = test_run_dir / "report.html"
+    if not report_path.exists():
+        # Generate report
+        report_path = generate_report(test_run_dir)
+        if not report_path:
+            console.print("[red]Error: Could not generate report[/red]")
+            return
+
+    console.print(f"[green]Report: {report_path}[/green]")
+
+    if open_browser:
+        import webbrowser
+        webbrowser.open(f"file://{report_path.absolute()}")
+
+
+@test.command("export")
+@click.argument("project_slug")
+@click.argument("recording_name")
+@click.option(
+    "--output", "-o",
+    type=click.Path(),
+    default=None,
+    help="Output script path",
+)
+def test_export(project_slug: str, recording_name: str, output: Optional[str]):
+    """
+    Export recording as standalone Playwright script.
+
+    导出录制为独立的Playwright脚本 / 録画をPlaywrightスクリプトとしてエクスポート
+
+    Example:
+        web-manual test export my-project login-test -o test_login.py
+    """
+    from .project import ProjectManager
+    from .capture.action_log import ActionLog
+
+    manager = ProjectManager()
+    recording_dir = manager.get_recording_dir(project_slug, recording_name)
+    action_log_path = recording_dir / "action_log.json"
+
+    if not action_log_path.exists():
+        console.print(f"[red]Error: action_log.json not found[/red]")
+        return
+
+    action_log = ActionLog.load(action_log_path)
+    script = action_log.to_script()
+
+    output_path = Path(output) if output else recording_dir / "test_script.py"
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(script)
+
+    console.print(f"[green]Script exported: {output_path}[/green]")
+
+
 # ==================== Web Editor Server ====================
 
 @main.command()
